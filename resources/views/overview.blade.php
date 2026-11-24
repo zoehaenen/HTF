@@ -1,12 +1,15 @@
 @extends('layouts.app')
 
+@section('title', 'Overzicht')
+
 @section('content')
 <h1>Overzicht</h1>
 
 <h2>Taken</h2>
 @if ($tasks->isEmpty())
-<p>Geen taken. <a href="{{ route('create') }}">Voeg er een toe.</a></p>
+<p>Nog geen taken. <a href="{{ route('create') }}">Voeg er een toe.</a></p>
 @else
+<div class="overflow-auto">
 <table>
   <thead>
     <tr>
@@ -22,75 +25,94 @@
     <tr class="{{ $task->done ? 'done-row' : '' }}">
       <td>
         {{ $task->title }}
-        @if (!$task->done && ($warnings[$task->id] ?? false))
-        <span class="invalid-date small-muted">Te weinig tijd</span>
+        @if (!$task->done && isset($warnings[$task->id]))
+        <br><span class="warning">{{ $warnings[$task->id] }}</span>
         @endif
       </td>
       <td>{{ $task->course ?? '-' }}</td>
-      <td>{{ $task->deadline->isoFormat('ddd D MMM Y') }}</td>
-      <td>{{ number_format($task->estimated_hours, 1) }}</td>
-      <td>
-        <form method="post" action="{{ route('tasks.done', $task) }}" style="display:inline">
+      <td class="nowrap">
+        {{ $task->deadline->isoFormat('dd D MMM Y') }}
+        @unless ($task->done)
+        @php $days = (int) round(\Illuminate\Support\Carbon::today()->diffInDays($task->deadline, false)); @endphp
+        <br><small class="muted">{{ match (true) { $days === 0 => 'vandaag', $days === 1 => 'morgen', $days > 1 => "over $days dagen", $days === -1 => '1 dag te laat', default => abs($days) . ' dagen te laat' } }}</small>
+        @endunless
+      </td>
+      <td>{{ number_format($task->estimated_hours, 1, ',', '') }}</td>
+      <td class="nowrap">
+        <form method="post" action="{{ route('tasks.done', $task) }}" class="inline">
           @csrf
-          <button type="submit" class="outline">{{ $task->done ? 'Heropen' : 'Klaar' }}</button>
+          <button type="submit" class="outline small">{{ $task->done ? 'Heropen' : 'Klaar' }}</button>
         </form>
-        <form method="post" action="{{ route('tasks.destroy', $task) }}" style="display:inline">
+        <form method="post" action="{{ route('tasks.destroy', $task) }}" class="inline" onsubmit="return confirm('Deze taak verwijderen?')">
           @csrf
-          <button type="submit" class="outline">Verwijderen</button>
+          <button type="submit" class="outline secondary small">Verwijderen</button>
         </form>
       </td>
     </tr>
     @endforeach
   </tbody>
 </table>
+</div>
 @endif
 
 <h2>Planning komende 14 dagen</h2>
+<div class="overflow-auto">
 <table>
   <thead>
     <tr>
       <th>Dag</th>
-      <th>Taken en uren</th>
+      <th>Taken</th>
       <th>Totaal</th>
     </tr>
   </thead>
   <tbody>
     @foreach ($planning as $day)
-    <tr>
-      <td>{{ $day['date']->isoFormat('ddd D MMM') }}</td>
+    <tr @if ($day['date']->isToday()) class="today" @endif>
+      <td class="nowrap">{{ $day['date']->isoFormat('dd D MMM') }}</td>
       <td>
         @forelse ($day['items'] as $item)
-        {{ $item['task']->title }}: {{ number_format($item['hours'], 1) }} u<br>
+        {{ $item['task']->title }}: {{ number_format($item['hours'], 1, ',', '') }} u<br>
         @empty
-        <span class="small-muted">vrij</span>
+        <span class="muted">vrij</span>
         @endforelse
       </td>
-      <td>{{ number_format($day['total'], 1) }} u</td>
+      <td class="nowrap">{{ number_format($day['total'], 1, ',', '') }} / {{ number_format($day['available'], 1, ',', '') }} u</td>
     </tr>
     @endforeach
   </tbody>
 </table>
+</div>
 
 <h2>Werkdruk per week</h2>
-<canvas id="chart" height="120"></canvas>
+@if (empty($weeks))
+<p class="muted">Nog geen geplande uren.</p>
+@else
+<canvas id="chart" height="110"
+  data-labels="{{ json_encode(array_map(fn ($w) => 'Week van ' . \Illuminate\Support\Carbon::parse($w)->isoFormat('D MMM'), array_keys($weeks))) }}"
+  data-values="{{ json_encode(array_map(fn ($v) => round($v, 1), array_values($weeks))) }}"></canvas>
+@endif
 @endsection
 
+@if (!empty($weeks))
 @push('scripts')
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
-new Chart(document.getElementById('chart'), {
+const chartEl = document.getElementById('chart');
+new Chart(chartEl, {
     type: 'bar',
     data: {
-        labels: @json(array_map(fn ($w) => 'Week van ' . \Illuminate\Support\Carbon::parse($w)->isoFormat('D MMM'), array_keys($weeks))),
+        labels: JSON.parse(chartEl.dataset.labels),
         datasets: [{
             label: 'Geplande uren',
-            data: @json(array_map(fn ($v) => round($v, 2), array_values($weeks))),
-            backgroundColor: '#4b0082'
+            data: JSON.parse(chartEl.dataset.values),
+            backgroundColor: '#1095c1'
         }]
     },
     options: {
-        scales: { y: { beginAtZero: true } }
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, title: { display: true, text: 'Uren' } } }
     }
 });
 </script>
 @endpush
+@endif

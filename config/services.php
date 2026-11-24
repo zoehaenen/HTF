@@ -37,6 +37,9 @@ return [
 
     'anthropic' => [
         'key' => env('ANTHROPIC_API_KEY'),
+        'url' => env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
+        'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-5-5'),
+        'auth' => env('ANTHROPIC_AUTH', 'x-api-key'),
     ],
 
 ];

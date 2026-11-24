@@ -7,7 +7,6 @@ use App\Models\Task;
 use App\Services\AnthropicService;
 use App\Services\PlanningService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Collection;
 
 class TaskController extends Controller
 {
@@ -18,12 +17,19 @@ class TaskController extends Controller
 
     public function analyse(Request $request, AnthropicService $api)
     {
-        $request->validate(['text' => 'required|string']);
+        $request->validate(['text' => 'required|string|max:20000'], [
+            'text.required' => 'Plak eerst een tekst.',
+            'text.max' => 'De tekst is te lang (maximaal 20000 tekens).',
+        ]);
 
         $result = $api->extractTasks($request->input('text'));
 
         if (isset($result['error'])) {
             return back()->withInput()->with(['error' => $result['error'], 'raw' => $result['raw']]);
+        }
+
+        if (empty($result['tasks'])) {
+            return back()->withInput()->with('error', 'Er werden geen taken gevonden in deze tekst.');
         }
 
         session(['draft_tasks' => $result['tasks'], 'source_text' => $request->input('text')]);
@@ -35,8 +41,9 @@ class TaskController extends Controller
     {
         $draft = session('draft_tasks');
         if (!$draft) {
-            return redirect()->route('create');
+            return redirect()->route('create')->with('status', 'Er zijn geen taken om te bevestigen. Analyseer eerst een tekst.');
         }
+
         return view('confirm', ['draft' => $draft]);
     }
 
@@ -48,44 +55,54 @@ class TaskController extends Controller
         }
 
         $rows = $request->input('tasks', []);
-        $source = session('source_text');
-        $saved = 0;
+        $errors = [];
+        $valid = [];
 
-        foreach ($draft as $i => $t) {
-            if (empty($rows[$i]['save'])) {
-                continue;
-            }
+        foreach (array_keys($draft) as $i) {
             $row = $rows[$i] ?? [];
-            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $row['deadline'] ?? '')) {
+            if (empty($row['save'])) {
                 continue;
             }
-            Task::create([
-                'title' => trim($row['title'] ?? '') !== '' ? trim($row['title']) : 'Zonder titel',
-                'course' => trim($row['course'] ?? '') !== '' ? trim($row['course']) : null,
-                'deadline' => $row['deadline'],
-                'estimated_hours' => is_numeric($row['estimated_hours'] ?? null) ? max(0.5, (float) $row['estimated_hours']) : 2.0,
-                'done' => false,
-                'source_text' => $source,
-            ]);
-            $saved++;
+            $deadline = AnthropicService::validDate($row['deadline'] ?? null);
+            if (!$deadline) {
+                $errors["tasks.$i.deadline"] = 'Vul een geldige deadline in.';
+                continue;
+            }
+            $title = trim((string) ($row['title'] ?? ''));
+            if ($title === '') {
+                $errors["tasks.$i.title"] = 'Vul een titel in.';
+                continue;
+            }
+            $course = trim((string) ($row['course'] ?? ''));
+            $hours = $row['estimated_hours'] ?? null;
+            $valid[] = [
+                'title' => mb_substr($title, 0, 255),
+                'course' => $course !== '' ? mb_substr($course, 0, 255) : null,
+                'deadline' => $deadline,
+                'estimated_hours' => is_numeric($hours) ? min(500, max(0.5, (float) $hours)) : 2.0,
+            ];
         }
 
-        session()->forget('draft_tasks');
+        if ($errors) {
+            return redirect()->route('confirm')->withInput()->withErrors($errors);
+        }
 
-        return redirect()->route('overview')->with('status', $saved . ' taak/taken opgeslagen.');
+        $source = session('source_text');
+        foreach ($valid as $data) {
+            Task::create($data + ['done' => false, 'source_text' => $source]);
+        }
+
+        session()->forget(['draft_tasks', 'source_text']);
+
+        $count = count($valid);
+
+        return redirect()->route('overview')->with('status', $count === 1 ? '1 taak opgeslagen.' : $count . ' taken opgeslagen.');
     }
 
     public function overview(PlanningService $planner)
     {
-        $tasks = Task::orderBy('deadline')->orderBy('id')->get();
-
-        $hours = Setting::pluck('hours', 'weekday')->all();
-        $available = [];
-        foreach (range(0, 6) as $w) {
-            $available[$w] = (float) ($hours[$w] ?? 2);
-        }
-
-        $plan = $planner->plan($tasks, $available);
+        $tasks = Task::orderBy('done')->orderBy('deadline')->orderBy('id')->get();
+        $plan = $planner->plan($tasks, Setting::available());
 
         return view('overview', [
             'tasks' => $tasks,
@@ -98,33 +115,36 @@ class TaskController extends Controller
     public function toggleDone(Task $task)
     {
         $task->update(['done' => !$task->done]);
+
         return redirect()->route('overview');
     }
 
     public function destroy(Task $task)
     {
         $task->delete();
-        return redirect()->route('overview');
+
+        return redirect()->route('overview')->with('status', 'Taak verwijderd.');
     }
 
     public function settings()
     {
-        $hours = Setting::pluck('hours', 'weekday')->all();
-        return view('settings', ['hours' => $hours]);
+        return view('settings', ['hours' => Setting::available()]);
     }
 
     public function updateSettings(Request $request)
     {
         $data = $request->validate([
             'hours' => 'required|array|size:7',
-            'hours.*' => 'nullable|numeric|min:0|max:24',
+            'hours.*' => 'required|numeric|min:0|max:24',
+        ], [
+            'hours.*.required' => 'Vul voor elke dag een aantal uren in.',
+            'hours.*.numeric' => 'Uren moeten een getal zijn.',
+            'hours.*.min' => 'Uren kunnen niet negatief zijn.',
+            'hours.*.max' => 'Een dag heeft maximaal 24 uur.',
         ]);
 
         foreach (range(0, 6) as $w) {
-            Setting::updateOrCreate(
-                ['weekday' => $w],
-                ['hours' => max(0, (float) ($data['hours'][$w] ?? 2))]
-            );
+            Setting::updateOrCreate(['weekday' => $w], ['hours' => (float) $data['hours'][$w]]);
         }
 
         return redirect()->route('settings')->with('status', 'Instellingen opgeslagen.');
