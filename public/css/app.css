@@ -1,0 +1,14 @@
+.invalid-date {
+    border-color: #d33;
+    background-color: #fff1f0;
+}
+
+.small-muted {
+    color: #666;
+    font-size: 0.85em;
+}
+
+.done-row {
+    opacity: 0.5;
+    text-decoration: line-through;
+}
